@@ -1,4 +1,2 @@
 
-streamlit
-pandas
-plotly
+streamlit>=1.40.0,<2.0
