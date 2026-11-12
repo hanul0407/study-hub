@@ -1,6 +1,26 @@
 
+# Python
 __pycache__/
-*.pyc
-study_hub.db
+*.py[cod]
+*.pyo
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Streamlit
 .streamlit/secrets.toml
-.env
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# System
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
