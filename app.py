@@ -14,7 +14,7 @@ st.set_page_config(
     layout="wide"
 )
 
-DB_PATH = os.environ.get("STUDY_HUB_DB", "study_hub.db")
+DB_PATH = os.environ.get("STUDY_HUB_DB", "/tmp/study_hub.db")
 
 ROOMS = {
     "3층 A실": [f"A{i:02d}" for i in range(1, 31)],
