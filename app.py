@@ -2,7 +2,8 @@
 import streamlit as st
 import sqlite3
 import os
-from datetime import date, datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 # ==========================================
 # 1. 기본 설정
@@ -11,10 +12,31 @@ from datetime import date, datetime
 st.set_page_config(
     page_title="STUDY HUB",
     page_icon="📚",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
-DB_PATH = os.environ.get("STUDY_HUB_DB", "/tmp/study_hub.db")
+KST = ZoneInfo("Asia/Seoul")
+
+# 새 데이터베이스 파일 사용
+DB_PATH = os.environ.get(
+    "STUDY_HUB_DB",
+    "/tmp/study_hub_v2.db"
+)
+
+ADMIN_PASSWORD = os.environ.get(
+    "STUDY_HUB_ADMIN_PASSWORD",
+    "studyhub1234"
+)
+
+CLOSING_HOUR = 22
+
+DURATION_OPTIONS = {
+    "1시간": 1,
+    "2시간": 2,
+    "3시간": 3,
+    "4시간": 4
+}
 
 ROOMS = {
     "3층 A실": [f"A{i:02d}" for i in range(1, 31)],
@@ -22,235 +44,411 @@ ROOMS = {
     "4층 C실": [f"C{i:02d}" for i in range(1, 61)]
 }
 
-TIME_SLOTS = [
-    "16:00 ~ 17:00",
-    "17:00 ~ 18:00",
-    "18:00 ~ 19:00",
-    "19:00 ~ 20:00",
-    "20:00 ~ 21:00",
-    "21:00 ~ 22:00"
-]
+TOTAL_SEATS = 120
+
 
 # ==========================================
-# 2. 화면 디자인
+# 2. 현재 시각 계산
+# ==========================================
+
+def get_now():
+    return datetime.now(KST).replace(
+        second=0,
+        microsecond=0
+    )
+
+
+def get_current_period(hours):
+    start = get_now()
+    end = start + timedelta(hours=hours)
+    return start, end
+
+
+def format_datetime(value):
+    return value.strftime("%Y-%m-%d %H:%M")
+
+
+def check_operating_hours(start, end):
+    closing = start.replace(
+        hour=CLOSING_HOUR,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
+    return end <= closing
+
+
+def time_remaining(end):
+    now = get_now()
+    seconds = max(
+        0,
+        int((end - now).total_seconds())
+    )
+
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+
+    return f"{hours}시간 {minutes}분"
+
+
+# ==========================================
+# 3. 화면 디자인
 # ==========================================
 
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap');
 
-    html, body, [class*="css"] {
-        font-family: 'Noto Sans KR', sans-serif;
-    }
+@import url(
+'https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap'
+);
 
-    .stApp {
-        background-color: #F5F7FB;
-    }
+html, body, [class*="css"] {
+    font-family: 'Noto Sans KR', sans-serif;
+}
 
-    .main-title {
-        font-size: 36px;
-        font-weight: 800;
-        color: #172554;
-        letter-spacing: -1px;
-    }
+.stApp {
+    background-color: #F5F7FB;
+}
 
-    .sub-title {
-        color: #64748B;
-        font-size: 15px;
-    }
+.main-title {
+    font-size: 38px;
+    font-weight: 800;
+    color: #172554;
+    letter-spacing: -1.5px;
+}
 
-    section[data-testid="stSidebar"] {
-        background-color: #172554;
-    }
+.sub-title {
+    color: #64748B;
+    font-size: 14px;
+}
 
-    section[data-testid="stSidebar"] * {
-        color: white;
-    }
+.login-card {
+    background: white;
+    padding: 28px;
+    border-radius: 18px;
+    border: 1px solid #E2E8F0;
+}
 
-    div.stButton > button {
-        border-radius: 9px;
-        font-weight: 600;
-        min-height: 42px;
-    }
+section[data-testid="stSidebar"] {
+    background-color: #172554;
+}
 
-    h1, h2, h3 {
-        color: #172554;
-    }
+section[data-testid="stSidebar"] * {
+    color: white;
+}
+
+/* 입력창 배경과 글씨 */
+
+.stTextInput input {
+    background-color: white !important;
+    color: #111827 !important;
+    -webkit-text-fill-color: #111827 !important;
+    border: 1px solid #CBD5E1 !important;
+}
+
+.stTextInput input::placeholder {
+    color: #94A3B8 !important;
+    -webkit-text-fill-color: #94A3B8 !important;
+}
+
+.stTextInput input:focus {
+    border: 2px solid #2563EB !important;
+    color: #111827 !important;
+    -webkit-text-fill-color: #111827 !important;
+}
+
+/* 버튼 */
+
+div.stButton > button {
+    border-radius: 10px;
+    font-weight: 600;
+    min-height: 42px;
+}
+
+h1, h2, h3 {
+    color: #172554;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
+
 # ==========================================
-# 3. 데이터베이스 연결
+# 4. 데이터베이스 연결
 # ==========================================
 
 def get_connection():
     conn = sqlite3.connect(
         DB_PATH,
-        timeout=15,
+        timeout=20,
         check_same_thread=False
     )
-    conn.execute("PRAGMA busy_timeout = 15000")
+
+    conn.execute("PRAGMA busy_timeout = 20000")
+
     return conn
 
 
 def init_database():
+
     with get_connection() as conn:
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS reservations (
+
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+
                 student_id TEXT NOT NULL,
+
                 student_name TEXT NOT NULL,
-                reservation_date TEXT NOT NULL,
-                time_slot TEXT NOT NULL,
+
                 room TEXT NOT NULL,
+
                 seat TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                UNIQUE(reservation_date, time_slot, room, seat),
-                UNIQUE(reservation_date, time_slot, student_id)
+
+                start_time TEXT NOT NULL,
+
+                end_time TEXT NOT NULL,
+
+                created_at TEXT NOT NULL
+
             )
         """)
 
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_reservation_search
-            ON reservations(reservation_date, time_slot, room)
+            CREATE INDEX IF NOT EXISTS idx_reservation_time
+            ON reservations(start_time, end_time)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reservation_user
+            ON reservations(student_id)
         """)
 
 
 init_database()
 
+
 # ==========================================
-# 4. 예약 데이터 조회
+# 5. 예약 시간 중복 확인
 # ==========================================
 
-def get_booked_seats(res_date, time_slot, room):
+def get_overlapping_reservations(
+    room,
+    seat,
+    start_time,
+    end_time
+):
+
     with get_connection() as conn:
+
         rows = conn.execute("""
-            SELECT seat
+            SELECT id, start_time, end_time
             FROM reservations
-            WHERE reservation_date = ?
-            AND time_slot = ?
-            AND room = ?
-        """, (res_date, time_slot, room)).fetchall()
+
+            WHERE room = ?
+            AND seat = ?
+
+            AND start_time < ?
+            AND end_time > ?
+
+        """, (
+            room,
+            seat,
+            format_datetime(end_time),
+            format_datetime(start_time)
+        )).fetchall()
+
+    return rows
+
+
+def get_booked_seats(start_time, end_time, room):
+
+    with get_connection() as conn:
+
+        rows = conn.execute("""
+            SELECT DISTINCT seat
+            FROM reservations
+
+            WHERE room = ?
+            AND start_time < ?
+            AND end_time > ?
+
+        """, (
+            room,
+            format_datetime(end_time),
+            format_datetime(start_time)
+        )).fetchall()
 
     return {row[0] for row in rows}
 
 
-def get_reservation_count(res_date, time_slot):
-    with get_connection() as conn:
-        result = conn.execute("""
-            SELECT COUNT(*)
-            FROM reservations
-            WHERE reservation_date = ?
-            AND time_slot = ?
-        """, (res_date, time_slot)).fetchone()
-
-    return result[0]
-
-
-def get_my_reservations(student_id):
-    with get_connection() as conn:
-        rows = conn.execute("""
-            SELECT id, reservation_date, time_slot, room, seat
-            FROM reservations
-            WHERE student_id = ?
-            ORDER BY reservation_date, time_slot
-        """, (student_id,)).fetchall()
-
-    return rows
-
 # ==========================================
-# 5. 좌석 예약 처리
+# 6. 예약 생성
 # ==========================================
 
 def make_reservation(
     student_id,
     student_name,
-    res_date,
-    time_slot,
     room,
-    seat
+    seat,
+    start_time,
+    end_time
 ):
+
     if room not in ROOMS or seat not in ROOMS[room]:
         return False, "올바르지 않은 좌석입니다."
+
+    # 운영시간 검사
+    if not check_operating_hours(start_time, end_time):
+        return False, "자습실은 오후 10시까지만 운영합니다."
+
+    # 이미 지나간 예약 방지
+    if start_time < get_now():
+        return False, "예약 시작 시간이 지났습니다. 다시 시도해 주세요."
 
     conn = get_connection()
 
     try:
+
         conn.execute("BEGIN IMMEDIATE")
 
-        existing_user = conn.execute("""
-            SELECT id FROM reservations
-            WHERE student_id = ?
-            AND reservation_date = ?
-            AND time_slot = ?
-        """, (student_id, res_date, time_slot)).fetchone()
-
-        if existing_user:
-            conn.rollback()
-            return False, "해당 시간에 이미 예약한 좌석이 있습니다."
-
+        # 좌석 중복 예약 확인
         existing_seat = conn.execute("""
-            SELECT id FROM reservations
-            WHERE reservation_date = ?
-            AND time_slot = ?
-            AND room = ?
+            SELECT id
+            FROM reservations
+
+            WHERE room = ?
             AND seat = ?
-        """, (res_date, time_slot, room, seat)).fetchone()
+
+            AND start_time < ?
+            AND end_time > ?
+
+            LIMIT 1
+
+        """, (
+            room,
+            seat,
+            format_datetime(end_time),
+            format_datetime(start_time)
+        )).fetchone()
 
         if existing_seat:
-            conn.rollback()
-            return False, "이미 예약된 좌석입니다."
 
+            conn.rollback()
+
+            return False, "해당 시간에 이미 예약된 좌석입니다."
+
+        # 같은 학생의 시간 중복 예약 방지
+        existing_user = conn.execute("""
+            SELECT id
+            FROM reservations
+
+            WHERE student_id = ?
+
+            AND start_time < ?
+            AND end_time > ?
+
+            LIMIT 1
+
+        """, (
+            student_id,
+            format_datetime(end_time),
+            format_datetime(start_time)
+        )).fetchone()
+
+        if existing_user:
+
+            conn.rollback()
+
+            return False, "해당 시간에 이미 다른 좌석을 예약했습니다."
+
+        # 예약 저장
         conn.execute("""
             INSERT INTO reservations (
                 student_id,
                 student_name,
-                reservation_date,
-                time_slot,
                 room,
                 seat,
+                start_time,
+                end_time,
                 created_at
             )
+
             VALUES (?, ?, ?, ?, ?, ?, ?)
+
         """, (
             student_id,
             student_name,
-            res_date,
-            time_slot,
             room,
             seat,
-            datetime.now().isoformat(timespec="seconds")
+            format_datetime(start_time),
+            format_datetime(end_time),
+            format_datetime(get_now())
         ))
 
         conn.commit()
-        return True, "예약이 완료되었습니다!"
 
-    except sqlite3.IntegrityError:
-        conn.rollback()
-        return False, "중복 예약입니다. 좌석을 다시 확인해 주세요."
+        return True, "예약이 성공적으로 완료되었습니다!"
 
     except sqlite3.Error:
+
         conn.rollback()
+
         return False, "데이터베이스 오류가 발생했습니다."
 
     finally:
+
         conn.close()
 
 # ==========================================
-# 6. 예약 취소
+# 7. 내 예약 조회 및 취소
 # ==========================================
 
-def cancel_reservation(reservation_id, student_id):
+def get_my_reservations(student_id):
+
     with get_connection() as conn:
+
+        rows = conn.execute("""
+            SELECT
+                id,
+                room,
+                seat,
+                start_time,
+                end_time
+
+            FROM reservations
+
+            WHERE student_id = ?
+
+            ORDER BY start_time
+
+        """, (student_id,)).fetchall()
+
+    return rows
+
+
+def cancel_reservation(reservation_id, student_id):
+
+    with get_connection() as conn:
+
         result = conn.execute("""
             DELETE FROM reservations
-            WHERE id = ? AND student_id = ?
-        """, (reservation_id, student_id))
+
+            WHERE id = ?
+            AND student_id = ?
+
+        """, (
+            reservation_id,
+            student_id
+        ))
 
     return result.rowcount > 0
 
+
 # ==========================================
-# 7. 사용자 로그인
+# 8. 로그인 상태 관리
 # ==========================================
 
 if "user" not in st.session_state:
@@ -263,33 +461,56 @@ if "selection_key" not in st.session_state:
     st.session_state.selection_key = None
 
 
-with st.sidebar:
+# ==========================================
+# 9. 로그인 화면
+# ==========================================
 
-    st.markdown("# 📚 STUDY HUB")
-    st.caption("SMART STUDY ROOM RESERVATION")
-    st.divider()
+if st.session_state.user is None:
 
-    if st.session_state.user is None:
+    st.markdown("<br><br>", unsafe_allow_html=True)
 
-        st.markdown("### 사용자 로그인")
-        st.caption("이름과 학번을 입력해 주세요.")
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+
+    with col2:
+
+        st.markdown(
+            '<div class="main-title">📚 STUDY HUB</div>',
+            unsafe_allow_html=True
+        )
+
+        st.markdown(
+            '<div class="sub-title">'
+            'SMART STUDY ROOM RESERVATION SYSTEM'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        st.write("")
+        st.divider()
+
+        st.markdown("### 로그인")
+
+        st.write(
+            "이름과 학번을 입력하고 자습실 예약을 시작하세요."
+        )
 
         with st.form("login_form"):
 
             student_name = st.text_input(
                 "이름",
-                placeholder="이름 입력",
+                placeholder="이름을 입력하세요",
                 max_chars=20
             )
 
             student_id = st.text_input(
                 "학번",
-                placeholder="학번 입력",
+                placeholder="학번을 입력하세요",
                 max_chars=20
             )
 
             login_button = st.form_submit_button(
                 "로그인",
+                type="primary",
                 use_container_width=True
             )
 
@@ -299,12 +520,19 @@ with st.sidebar:
                 student_id = student_id.strip()
 
                 if not student_name or not student_id:
-                    st.error("이름과 학번을 입력해 주세요.")
+
+                    st.error(
+                        "이름과 학번을 모두 입력해 주세요."
+                    )
 
                 elif len(student_id) < 2:
-                    st.error("학번을 올바르게 입력해 주세요.")
+
+                    st.error(
+                        "학번을 올바르게 입력해 주세요."
+                    )
 
                 else:
+
                     st.session_state.user = {
                         "name": student_name,
                         "id": student_id
@@ -314,23 +542,42 @@ with st.sidebar:
 
                     st.rerun()
 
-    else:
-
-        st.success(
-            f"{st.session_state.user['name']}님 환영합니다!"
-        )
+        st.divider()
 
         st.caption(
-            f"학번: {st.session_state.user['id']}"
+            "STUDY HUB | 스마트 자습실 예약 시스템"
         )
 
-        if st.button(
-            "로그아웃",
-            use_container_width=True
-        ):
-            st.session_state.user = None
-            st.session_state.selected_seat = None
-            st.rerun()
+    st.stop()
+
+
+# ==========================================
+# 10. 로그인 이후 사이드바
+# ==========================================
+
+with st.sidebar:
+
+    st.markdown("# 📚 STUDY HUB")
+
+    st.divider()
+
+    st.success(
+        f"{st.session_state.user['name']}님 환영합니다!"
+    )
+
+    st.write(
+        f"학번: {st.session_state.user['id']}"
+    )
+
+    if st.button(
+        "로그아웃",
+        use_container_width=True
+    ):
+
+        st.session_state.user = None
+        st.session_state.selected_seat = None
+
+        st.rerun()
 
     st.divider()
 
@@ -347,9 +594,15 @@ with st.sidebar:
     **전체 120석**
     """)
 
+    st.divider()
+
+    st.markdown("### ⏰ 운영시간")
+
+    st.write("매일 오후 10시까지")
+
 
 # ==========================================
-# 8. 메인 화면
+# 11. 메인 홈페이지
 # ==========================================
 
 st.markdown(
@@ -358,40 +611,23 @@ st.markdown(
 )
 
 st.markdown(
-    '<div class="sub-title">스마트 자습실 좌석 예약 시스템</div>',
+    '<div class="sub-title">'
+    '스마트 자습실 좌석 예약 시스템'
+    '</div>',
     unsafe_allow_html=True
 )
 
 st.write("")
 
+# 현재 시각 표시
 
-# 로그인하지 않은 사용자 화면
+current_time = get_now()
 
-if st.session_state.user is None:
+st.info(
+    f"🕒 현재 한국 시각: {current_time.strftime('%Y년 %m월 %d일 %H:%M')}"
+)
 
-    st.info(
-        "왼쪽 메뉴에서 이름과 학번을 입력하고 로그인해 주세요."
-    )
-
-    st.markdown("## 📚 편리한 자습실 예약")
-
-    st.write(
-        "원하는 날짜와 시간, 자습실을 선택하고 "
-        "실시간 잔여 좌석을 확인할 수 있습니다."
-    )
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric("전체 좌석", "120석")
-    col2.metric("자습실", "3개")
-    col3.metric("예약 단위", "1시간")
-
-    st.stop()
-
-
-# ==========================================
-# 9. 메뉴 구성
-# ==========================================
+# 메뉴
 
 tab1, tab2, tab3 = st.tabs([
     "🪑 좌석 예약",
@@ -401,46 +637,105 @@ tab1, tab2, tab3 = st.tabs([
 
 
 # ==========================================
-# 10. 좌석 예약 화면
+# 12. 좌석 예약
 # ==========================================
 
 with tab1:
 
-    st.header("🪑 좌석 예약")
+    st.header("🪑 자습실 좌석 예약")
 
     st.caption(
-        "원하는 날짜와 시간, 자습실을 선택해 주세요."
+        "현재 시각부터 원하는 시간만큼 이용할 수 있습니다."
     )
+
+    # 현재 시각 기준 이용 시간 계산
+
+    selected_duration_label = st.radio(
+        "이용 시간을 선택하세요.",
+        list(DURATION_OPTIONS.keys()),
+        horizontal=True
+    )
+
+    selected_duration = DURATION_OPTIONS[
+        selected_duration_label
+    ]
+
+    start_time, end_time = get_current_period(
+        selected_duration
+    )
+
+    st.divider()
+
+    # 예약 시간 표시
 
     col1, col2 = st.columns(2)
 
     with col1:
 
-        selected_date = st.date_input(
-            "📅 예약 날짜",
-            value=date.today(),
-            min_value=date.today()
+        st.metric(
+            "예약 시작",
+            start_time.strftime("%H:%M")
         )
 
     with col2:
 
-        selected_time = st.selectbox(
-            "🕒 이용 시간",
-            TIME_SLOTS
+        st.metric(
+            "예약 종료 예정",
+            end_time.strftime("%H:%M")
         )
 
+    st.write("")
+
+    # 운영 종료 시간 확인
+
+    if not check_operating_hours(start_time, end_time):
+
+        st.error(
+            "⏰ 예약할 수 없습니다!\n\n"
+            "자습실은 오후 10시까지만 운영합니다. "
+            "선택한 이용 시간이 운영 종료 시간을 초과합니다. "
+            "이용 시간을 줄여 다시 선택해 주세요."
+        )
+
+        closing_time = start_time.replace(
+            hour=22,
+            minute=0,
+            second=0,
+            microsecond=0
+        )
+
+        remaining_minutes = max(
+            0,
+            int((closing_time - start_time).total_seconds() // 60)
+        )
+
+        st.warning(
+            f"현재 이용 가능한 시간은 최대 "
+            f"{remaining_minutes}분입니다."
+        )
+
+    else:
+
+        st.success(
+            f"예약 가능 시간: "
+            f"{start_time.strftime('%H:%M')} ~ "
+            f"{end_time.strftime('%H:%M')}"
+        )
+
+    st.divider()
+
+    # 자습실 선택
+
     selected_room = st.selectbox(
-        "🏫 자습실 선택",
+        "🏫 자습실을 선택하세요.",
         list(ROOMS.keys())
     )
-
-    date_string = selected_date.isoformat()
 
     # 예약된 좌석 조회
 
     booked_seats = get_booked_seats(
-        date_string,
-        selected_time,
+        start_time,
+        end_time,
         selected_room
     )
 
@@ -449,8 +744,6 @@ with tab1:
     available_count = (
         len(all_seats) - len(booked_seats)
     )
-
-    st.divider()
 
     # 좌석 통계
 
@@ -471,7 +764,7 @@ with tab1:
         f"{available_count}석"
     )
 
-    st.write("")
+    st.divider()
 
     # 좌석 배치도
 
@@ -492,21 +785,22 @@ with tab1:
     """, unsafe_allow_html=True)
 
     st.caption(
-        "🟢 예약 가능   🔴 예약 완료   🔵 선택한 좌석"
+        "🟢 예약 가능  |  🔴 예약 완료  |  🔵 선택한 좌석"
     )
 
-    # 날짜, 시간, 자습실이 바뀌면 선택 초기화
+    # 자습실이나 이용 시간이 바뀌면 선택 초기화
 
-    selected_key = (
-        date_string,
-        selected_time,
-        selected_room
+    selection_key = (
+        selected_room,
+        selected_duration_label,
+        start_time.strftime("%Y-%m-%d %H:%M")
     )
 
-    if st.session_state.selection_key != selected_key:
+    if st.session_state.selection_key != selection_key:
 
         st.session_state.selected_seat = None
-        st.session_state.selection_key = selected_key
+
+        st.session_state.selection_key = selection_key
 
     # 좌석 버튼 생성
 
@@ -524,21 +818,21 @@ with tab1:
 
             if is_booked:
 
-                button_type = "secondary"
-                disabled = True
                 label = f"🔴 {seat}"
+                disabled = True
+                button_type = "secondary"
 
             elif is_selected:
 
-                button_type = "primary"
-                disabled = False
                 label = f"🔵 {seat}"
+                disabled = False
+                button_type = "primary"
 
             else:
 
-                button_type = "secondary"
-                disabled = False
                 label = f"🟢 {seat}"
+                disabled = False
+                button_type = "secondary"
 
             if st.button(
                 label,
@@ -554,7 +848,7 @@ with tab1:
 
     st.divider()
 
-    # 예약 확인
+    # 예약 최종 확인
 
     st.markdown("### 예약 정보 확인")
 
@@ -562,44 +856,74 @@ with tab1:
 
         st.info(
             f"""
-            **선택한 자습실:** {selected_room}
+**예약자:** {st.session_state.user['name']}
 
-            **선택한 좌석:** {st.session_state.selected_seat}
+**자습실:** {selected_room}
 
-            **예약 날짜:** {date_string}
+**좌석:** {st.session_state.selected_seat}
 
-            **이용 시간:** {selected_time}
+**시작 시간:** {format_datetime(start_time)}
 
-            **예약자:** {st.session_state.user['name']}
-            """
+**종료 시간:** {format_datetime(end_time)}
+
+**이용 시간:** {selected_duration}시간
+"""
         )
 
-        if st.button(
-            "✅ 예약 확정하기",
-            type="primary",
-            use_container_width=True
-        ):
+        if not check_operating_hours(start_time, end_time):
 
-            success, message = make_reservation(
-                st.session_state.user["id"],
-                st.session_state.user["name"],
-                date_string,
-                selected_time,
-                selected_room,
-                st.session_state.selected_seat
+            st.error(
+                "운영 종료 시간을 초과하여 예약할 수 없습니다."
             )
 
-            if success:
+        else:
 
-                st.session_state.selected_seat = None
+            if st.button(
+                "✅ 예약 확정하기",
+                type="primary",
+                use_container_width=True
+            ):
 
-                st.success(message)
+                # 버튼을 누르는 순간 다시 현재 시각 계산
 
-                st.rerun()
+                latest_start, latest_end = get_current_period(
+                    selected_duration
+                )
 
-            else:
+                if not check_operating_hours(
+                    latest_start,
+                    latest_end
+                ):
 
-                st.error(message)
+                    st.error(
+                        "오후 10시 운영 종료 시간을 초과했습니다. "
+                        "이용 시간을 줄여 주세요."
+                    )
+
+                else:
+
+                    success, message = make_reservation(
+                        st.session_state.user["id"],
+                        st.session_state.user["name"],
+                        selected_room,
+                        st.session_state.selected_seat,
+                        latest_start,
+                        latest_end
+                    )
+
+                    if success:
+
+                        st.session_state.selected_seat = None
+
+                        st.success(message)
+
+                        st.balloons()
+
+                        st.rerun()
+
+                    else:
+
+                        st.error(message)
 
     else:
 
@@ -608,7 +932,7 @@ with tab1:
         )
 
 # ==========================================
-# 11. 내 예약 내역
+# 13. 내 예약 내역
 # ==========================================
 
 with tab2:
@@ -616,7 +940,7 @@ with tab2:
     st.header("📋 내 예약 내역")
 
     st.caption(
-        "내가 예약한 자습실과 좌석을 확인할 수 있습니다."
+        "내가 예약한 좌석과 이용 시간을 확인할 수 있습니다."
     )
 
     my_reservations = get_my_reservations(
@@ -625,7 +949,7 @@ with tab2:
 
     if not my_reservations:
 
-        st.info("현재 예약된 좌석이 없습니다.")
+        st.info("현재 예약 내역이 없습니다.")
 
     else:
 
@@ -635,7 +959,13 @@ with tab2:
 
         for reservation in my_reservations:
 
-            rid, res_date, time_slot, room, seat = reservation
+            rid, room, seat, start, end = reservation
+
+            now_string = format_datetime(get_now())
+
+            is_active = (
+                start <= now_string < end
+            )
 
             with st.container(border=True):
 
@@ -644,84 +974,115 @@ with tab2:
                 with c1:
 
                     st.markdown(
-                        f"**🏫 {room} / {seat}**"
+                        f"### 🏫 {room} / {seat}"
                     )
 
-                    st.write(f"📅 예약 날짜: {res_date}")
+                    st.write(f"📅 시작: {start}")
+                    st.write(f"⏰ 종료: {end}")
 
-                    st.write(f"🕒 이용 시간: {time_slot}")
+                    if is_active:
+
+                        st.success("이용 중")
+
+                    elif end <= now_string:
+
+                        st.caption("이용 종료")
+
+                    else:
+
+                        st.info("이용 예정")
 
                 with c2:
 
-                    if st.button(
-                        "예약 취소",
-                        key=f"cancel_{rid}",
-                        use_container_width=True
-                    ):
+                    if end > now_string:
 
-                        if cancel_reservation(
-                            rid,
-                            st.session_state.user["id"]
+                        if st.button(
+                            "예약 취소",
+                            key=f"cancel_{rid}",
+                            use_container_width=True
                         ):
 
-                            st.success(
-                                "예약이 취소되었습니다."
+                            result = cancel_reservation(
+                                rid,
+                                st.session_state.user["id"]
                             )
 
-                            st.rerun()
+                            if result:
 
-                        else:
+                                st.success(
+                                    "예약이 취소되었습니다."
+                                )
 
-                            st.error(
-                                "예약 취소에 실패했습니다."
-                            )
+                                st.rerun()
+
+                            else:
+
+                                st.error(
+                                    "예약 취소에 실패했습니다."
+                                )
 
 
 # ==========================================
-# 12. 전체 예약 현황
+# 14. 전체 예약 현황
 # ==========================================
 
 with tab3:
 
-    st.header("📊 전체 예약 현황")
+    st.header("📊 전체 자습실 현황")
 
     st.caption(
-        "날짜와 시간대별 자습실 예약 현황을 확인합니다."
+        "현재 시각부터 선택한 시간 동안 이용 가능한 좌석을 확인합니다."
     )
 
-    dashboard_date = st.date_input(
-        "현황 조회 날짜",
-        value=date.today(),
-        min_value=date.today(),
-        key="dashboard_date"
+    dashboard_duration_label = st.selectbox(
+        "조회할 이용 시간",
+        list(DURATION_OPTIONS.keys()),
+        key="dashboard_duration"
     )
 
-    dashboard_time = st.selectbox(
-        "현황 조회 시간",
-        TIME_SLOTS,
-        key="dashboard_time"
+    dashboard_duration = DURATION_OPTIONS[
+        dashboard_duration_label
+    ]
+
+    dashboard_start, dashboard_end = get_current_period(
+        dashboard_duration
     )
 
-    dashboard_date_string = dashboard_date.isoformat()
+    st.info(
+        f"조회 시간: {dashboard_start.strftime('%H:%M')} ~ "
+        f"{dashboard_end.strftime('%H:%M')}"
+    )
+
+    if not check_operating_hours(
+        dashboard_start,
+        dashboard_end
+    ):
+
+        st.warning(
+            "선택한 조회 시간은 오후 10시 운영 종료 시간을 초과합니다."
+        )
 
     # 전체 예약 통계
 
-    total_seats = 120
+    total_booked = 0
 
-    total_booked = get_reservation_count(
-        dashboard_date_string,
-        dashboard_time
-    )
+    for room in ROOMS:
 
-    total_available = (
-        total_seats - total_booked
-    )
+        total_booked += len(
+            get_booked_seats(
+                dashboard_start,
+                dashboard_end,
+                room
+            )
+        )
+
+    total_available = TOTAL_SEATS - total_booked
 
     c1, c2, c3 = st.columns(3)
 
     c1.metric(
         "전체 좌석",
-        f"{total_seats}석"
+        f"{TOTAL_SEATS}석"
     )
 
     c2.metric(
@@ -730,31 +1091,29 @@ with tab3:
     )
 
     c3.metric(
-        "잔여 좌석",
+        "예약 가능",
         f"{total_available}석"
     )
 
-    # 예약률
-
-    reservation_rate = total_booked / total_seats
-
-    st.progress(reservation_rate)
+    st.progress(
+        total_booked / TOTAL_SEATS
+    )
 
     st.caption(
-        f"전체 예약률: {reservation_rate * 100:.1f}%"
+        f"예약률: {total_booked / TOTAL_SEATS * 100:.1f}%"
     )
 
     st.divider()
 
-    # 자습실별 예약 현황
+    # 자습실별 현황
 
-    st.markdown("### 🏫 자습실별 현황")
+    st.markdown("### 🏫 자습실별 좌석 현황")
 
     for room, seats in ROOMS.items():
 
         booked = get_booked_seats(
-            dashboard_date_string,
-            dashboard_time,
+            dashboard_start,
+            dashboard_end,
             room
         )
 
@@ -784,16 +1143,17 @@ with tab3:
                 else "잔여 좌석이 없습니다."
             )
 
-    # ======================================
-    # 13. 관리자 상세 조회
-    # ======================================
+
+# ==========================================
+# 15. 관리자 상세 조회
+# ==========================================
 
     st.divider()
 
     st.subheader("🔐 관리자 상세 조회")
 
     st.caption(
-        "관리자 비밀번호를 입력하면 해당 시간대의 예약자 정보를 확인할 수 있습니다."
+        "관리자 비밀번호를 입력하면 전체 예약자 정보를 확인할 수 있습니다."
     )
 
     admin_password = st.text_input(
@@ -803,16 +1163,11 @@ with tab3:
     )
 
     if st.button(
-        "관리자 데이터 확인",
+        "관리자 예약 데이터 확인",
         use_container_width=True
     ):
 
-        correct_password = os.environ.get(
-            "STUDY_HUB_ADMIN_PASSWORD",
-            "studyhub1234"
-        )
-
-        if admin_password == correct_password:
+        if admin_password == ADMIN_PASSWORD:
 
             with get_connection() as conn:
 
@@ -820,23 +1175,22 @@ with tab3:
                     SELECT
                         student_name,
                         student_id,
-                        reservation_date,
-                        time_slot,
                         room,
-                        seat
+                        seat,
+                        start_time,
+                        end_time,
+                        created_at
+
                     FROM reservations
-                    WHERE reservation_date = ?
-                    AND time_slot = ?
-                    ORDER BY room, seat
-                """, (
-                    dashboard_date_string,
-                    dashboard_time
-                )).fetchall()
+
+                    ORDER BY start_time DESC
+
+                """).fetchall()
 
             if records:
 
                 st.success(
-                    f"총 {len(records)}건의 예약 내역을 확인했습니다."
+                    f"총 {len(records)}건의 예약 데이터를 확인했습니다."
                 )
 
                 st.dataframe(
@@ -844,10 +1198,11 @@ with tab3:
                         {
                             "이름": row[0],
                             "학번": row[1],
-                            "날짜": row[2],
-                            "시간": row[3],
-                            "자습실": row[4],
-                            "좌석": row[5]
+                            "자습실": row[2],
+                            "좌석": row[3],
+                            "예약 시작": row[4],
+                            "예약 종료": row[5],
+                            "예약 생성": row[6]
                         }
                         for row in records
                     ],
@@ -857,9 +1212,7 @@ with tab3:
 
             else:
 
-                st.info(
-                    "해당 시간대에 예약 내역이 없습니다."
-                )
+                st.info("아직 예약 내역이 없습니다.")
 
         else:
 
@@ -869,7 +1222,7 @@ with tab3:
 
 
 # ==========================================
-# 14. 하단 정보
+# 16. 하단 정보
 # ==========================================
 
 st.divider()
@@ -880,13 +1233,16 @@ st.markdown(
         text-align:center;
         color:#94A3B8;
         font-size:12px;
-        padding:15px;
+        padding:20px;
     ">
         <b>STUDY HUB</b><br>
         SMART STUDY ROOM RESERVATION SYSTEM<br><br>
+
         3F A ROOM · 3F B ROOM · 4F C ROOM<br>
+
         TOTAL 120 SEATS<br><br>
-        © STUDY HUB
+
+        OPERATING HOURS : UNTIL 22:00
     </div>
     """,
     unsafe_allow_html=True
